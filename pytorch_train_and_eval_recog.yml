@@ -35,7 +35,7 @@ data_settings:
   crop_height:
   crop_width:
   input_size: [250, 250]
-  images_per_track: 5 #if using track based
+  images_per_track: 2 #if using track based
   batch_size: 32
   aug_p: 0.3
   percent_valid: 0.2 

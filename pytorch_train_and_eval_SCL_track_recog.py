@@ -227,6 +227,7 @@ def train_and_eval(config_file):
     ## Define Dataloaders for training of aggregator, including subsampling validation set if necessary
 
     image_size = data_config['input_size']
+    images_per_track = data_config['images_per_track']
     bs = data_config['batch_size']
     #num_epochs = train_config['num_epochs']
 
@@ -235,7 +236,7 @@ def train_and_eval(config_file):
     if data_config['datafiles']['valid'] != None: 
         df = pd.read_csv(data_config['datafiles']['train'])
         print("Reading dataframe at ",data_config['datafiles']['train'])
-        train_dataset = Flowerpatch_w_Track_and_Filter(df,'new_filepath','ID','track',image_size,'train')
+        train_dataset = Flowerpatch_w_Track_and_Filter(df,'new_filepath','ID','track',image_size,'train',imgs_per_track=images_per_track)
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=bs, shuffle=True)
         train_embeddings, train_labels, train_tracks = get_embeddings_w_track(embedder,train_dataloader,device)
         print('Train embeddings made with',model_name,"shape:",train_embeddings.size())
@@ -244,7 +245,7 @@ def train_and_eval(config_file):
         valid_df = pd.read_csv(data_config['datafiles']['valid'])
         #valid_df = prepare_for_triplet_loss(valid_df, data_config['label_col'], data_config['fname_col']) #deprecated function standardizes col names
 
-        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath','ID','track',image_size,'test')
+        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
         valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
         valid_embeddings, valid_labels, valid_tracks = get_embeddings_w_track(embedder,valid_dataloader,device)
         print('Valid embeddings made with',model_name,"shape:",valid_embeddings.size())
@@ -265,12 +266,12 @@ def train_and_eval(config_file):
 
         #train_df = prepare_for_triplet_loss(train_df, data_config['label_col'], data_config['fname_col']) #deprecated function only renames columns
 
-        train_dataset = Flowerpatch_w_Track_and_Filter(train_df,'new_filepath','ID','track',image_size,'train')
+        train_dataset = Flowerpatch_w_Track_and_Filter(train_df,'new_filepath','ID','track',image_size,'train',imgs_per_track=images_per_track)
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=bs, shuffle=True)
         train_embeddings, train_labels, train_tracks = get_embeddings_w_track(embedder,train_dataloader,device)
         print('Train embeddings made with',model_name,"shape:",train_embeddings.size())
 
-        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath','ID','track',image_size,'test')
+        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
         valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
         valid_embeddings, valid_labels, valid_tracks = get_embeddings_w_track(embedder,valid_dataloader,device)
         print('Valid embeddings made with',model_name,"shape:",valid_embeddings.size())
@@ -290,7 +291,7 @@ def train_and_eval(config_file):
         track = row['track']
         id_to_check = test_df[test_df['ID']==id]
         to_check = id_to_check[id_to_check['track'] == track]
-        selected_images = to_check.sample(n=5) #TODO Add num images per track to yml 
+        selected_images = to_check.sample(n=images_per_track) #TODO Add num images per track to yml 
         if idx == 0:
             ref_df = selected_images
         else:
@@ -307,7 +308,7 @@ def train_and_eval(config_file):
     print(f"{test_num} total test samples")
 
     
-    test_dataset = Flowerpatch_w_Track_and_Filter(test_df,'new_filepath','ID','track',image_size,'test')
+    test_dataset = Flowerpatch_w_Track_and_Filter(test_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
     test_embeddings, test_labels, test_tracks = get_embeddings_w_track(embedder,test_dataloader,device)
     print('Test embeddings made with',model_name,"shape:",test_embeddings.size())
@@ -331,16 +332,16 @@ def train_and_eval(config_file):
     naive2 = knn_evaluation(train_embeddings.cpu().numpy(), train_labels, test_embeddings.cpu().numpy(), test_labels, 1,per_class=False)
 
     #Build Dataloaders of precomputed embeddings
-    train_dataset = Flowerpatch_Embeddings(train_embeddings,train_labels,train_tracks)
+    train_dataset = Flowerpatch_Embeddings(train_embeddings,train_labels,train_tracks,images_per_track)
     train_dataloader =  DataLoader(train_dataset, batch_size=bs, shuffle=True)
 
-    valid_dataset = Flowerpatch_Embeddings(valid_embeddings,valid_labels,valid_tracks)
+    valid_dataset = Flowerpatch_Embeddings(valid_embeddings,valid_labels,valid_tracks,images_per_track)
     valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
 
-    test_dataset = Flowerpatch_Embeddings(test_embeddings,test_labels,test_tracks)
+    test_dataset = Flowerpatch_Embeddings(test_embeddings,test_labels,test_tracks,images_per_track)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
 
-    ref_dataset = Flowerpatch_Embeddings(ref_embeddings,ref_labels,ref_tracks)
+    ref_dataset = Flowerpatch_Embeddings(ref_embeddings,ref_labels,ref_tracks,images_per_track)
     ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=bs, shuffle=False)
 
     if verbose:
@@ -517,6 +518,7 @@ def train_and_eval(config_file):
     results['valid_loss'] = valid_loss
     results['wandb_id'] = experiment.id
     print(experiment.id)
+    results['images_per_track'] = images_per_track
     results['start_time'] = experiment.start_time
     results['train_time'] = duration
     results['stop_epoch'] = stop_epoch
