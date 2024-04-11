@@ -1,0 +1,57 @@
+torch_seed: 101
+verbose: True
+model_settings:
+  embeddor_path: '/home/gsantiago/ReID_model_training/new_auto_train_eval/models_trained/summer_bee_dataset_open_train_bee_64_ids_batch1_sample_num_64/wandb/run-20231106_004425-yida7voj/files/summer_bee_dataset_open_train_bee_64_ids_batch1_sample_num_64.pth' #new model #/home/lmeyers/contrastive_learning_new_training/64_ids_batch1_sample_num_max/64_ids_batch1_sample_num_max.pth 
+  model_class: recogModel
+  num_labels: 10
+  latent_dim: 128
+  model_path: ./pytorch_embed_recognition_model.pth
+train_settings:
+  learning_rate: 0.0001
+  num_epochs: 500
+  margin: 0.2
+  percent_pos: .2
+  perform_validation: 5
+  print_k: 10
+  save_checkpoint_freq: 100
+  early_stopping: True
+  early_stopping_metric: accuracy #loss or accuracy
+  early_stop_consecutive_epochs: 250
+  gpu: 1
+  wandb_project_name: Recognition_dev_new_data
+  wandb_entity_name: lqmeyers
+  wandb_dir_path: 
+  wandb_resume: False
+  checkpoint_to_load:  #if resuming
+  wandb_run_id: #if resuming
+data_settings:
+  dataset: flowerpatch
+  split_type: closed
+  fname_col: new_filepath
+  label_col: ID
+  cropped: False
+  crop_top:
+  crop_left:
+  crop_height:
+  crop_width:
+  input_size: [250, 250]
+  images_per_track: 2 #if using track based
+  batch_size: 32
+  aug_p: 0.3
+  percent_valid: 0.2 
+  datafiles:
+    train:  
+    valid: 
+    test: 
+  n_distractors: 9
+  image_id_col: image_id
+  gallery_id: gallery_id
+  iteration_id: iteration_id
+eval_settings:
+  percent_ref: .1
+  n_neighbors: 1
+  per_class: False
+  conf_matrix: False
+  percent_pos: #if blank will calcualte 1/num_ids
+  pickle_file: './results.pkl'
+  results_file: './results_new_data.csv'
