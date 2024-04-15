@@ -102,7 +102,7 @@ def get_embeddings_w_track(model, dataloader,device):
 ########################################################################################
 
 ##########################################################################################
-# FUNCTION TO GET EMBEDDINGS AND LABELS FOR EVALUATING MODEL
+# FUNCTION TO AGGREGATE TEST EMBEDDINGS AND LABELS FOR EVALUATING MODEL
 def get_loss(model, dataloader, loss_fn, miner, device, feature_extractor=None):
     embeddings = []
     all_labels = []
@@ -228,7 +228,7 @@ def train_and_eval(config_file):
 
     image_size = data_config['input_size']
     images_per_track = data_config['images_per_track']
-    bs = data_config['batch_size']
+    bs = data_config['embeddor_batch_size']
     #num_epochs = train_config['num_epochs']
 
     ## Build and precompute train and validation embeddings 
@@ -277,7 +277,6 @@ def train_and_eval(config_file):
         print('Valid embeddings made with',model_name,"shape:",valid_embeddings.size())
 
     ### Build test dataloader and subsample for reference set
-
     test_df = pd.read_csv(data_config['datafiles']['test'])
 
     #Group by 'ID' and 'Track' and filter out tracks with fewer than 10 images
@@ -307,6 +306,10 @@ def train_and_eval(config_file):
     print(f"Using {ref_num_rows} samples for validation set")
     print(f"{test_num} total test samples")
 
+    #set different batch size for small reference set
+    ref_bs = 32
+    aggr_bs = data_config['aggregator_batch_size']
+    
     
     test_dataset = Flowerpatch_w_Track_and_Filter(test_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
@@ -314,7 +317,7 @@ def train_and_eval(config_file):
     print('Test embeddings made with',model_name,"shape:",test_embeddings.size())
 
     ref_dataset = Flowerpatch_w_Track(ref_df,'new_filepath','ID','track',image_size,'test')
-    ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=bs, shuffle=False)
+    ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=ref_bs, shuffle=False)
     ref_embeddings, ref_labels, ref_tracks = get_embeddings_w_track(embedder,ref_dataloader,device)
     print('Reference embeddings made with',model_name,"shape:",ref_embeddings.size())
     
@@ -323,7 +326,7 @@ def train_and_eval(config_file):
     print("KNN evaluation before multi-image agglomeration training")
     print("")
     print("KNN within train embeddings (initilized on valid set:)")
-    naive1 = knn_evaluation(valid_embeddings.cpu().numpy(),valid_labels,train_embeddings.cpu().numpy(),train_labels,1,False,False)
+    naive1 = knn_evaluation(valid_embeddings.cpu().numpy(),valid_labels,train_embeddings.cpu().numpy(),train_labels,1,False,False) #TODO Swap
     print("")
     print("KNN within test embeddings (initilized on ref set:)")
     naive1 = knn_evaluation(ref_embeddings.cpu().numpy(),ref_labels,test_embeddings.cpu().numpy(),test_labels,1,False,False)
@@ -331,18 +334,19 @@ def train_and_eval(config_file):
     print("KNN evaluation open set (initilized batch 1 evaluated on batch 2)")
     naive2 = knn_evaluation(train_embeddings.cpu().numpy(), train_labels, test_embeddings.cpu().numpy(), test_labels, 1,per_class=False)
 
-    #Build Dataloaders of precomputed embeddings
-    train_dataset = Flowerpatch_Embeddings(train_embeddings,train_labels,train_tracks,images_per_track)
-    train_dataloader =  DataLoader(train_dataset, batch_size=bs, shuffle=True)
+    #Build Dataloaders of precomputed embedding
+    #Now on recieving packets of frame embedding
+    train_dataset = Flowerpatch_Embeddings_v2(train_embeddings,train_labels,train_tracks,images_per_track)
+    train_dataloader =  DataLoader(train_dataset, batch_size=aggr_bs, shuffle=True)
 
-    valid_dataset = Flowerpatch_Embeddings(valid_embeddings,valid_labels,valid_tracks,images_per_track)
-    valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
+    valid_dataset = Flowerpatch_Embeddings_v2(valid_embeddings,valid_labels,valid_tracks,images_per_track)
+    valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=aggr_bs, shuffle=False)
 
-    test_dataset = Flowerpatch_Embeddings(test_embeddings,test_labels,test_tracks,images_per_track)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
+    test_dataset = Flowerpatch_Embeddings_v2(test_embeddings,test_labels,test_tracks,images_per_track)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=aggr_bs, shuffle=False)
 
-    ref_dataset = Flowerpatch_Embeddings(ref_embeddings,ref_labels,ref_tracks,images_per_track)
-    ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=bs, shuffle=False)
+    ref_dataset = Flowerpatch_Embeddings_v2(ref_embeddings,ref_labels,ref_tracks,images_per_track)
+    ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=ref_bs, shuffle=False)
 
     if verbose:
         try:
@@ -419,12 +423,12 @@ def train_and_eval(config_file):
         running_loss = 0.0
         for k, data in enumerate(train_dataloader):
             #print("Loading data for batch",k)
-            tracks = data['track_embeddings']
-            labels = data['id'].to(device)
+            packets_of_frame_embeddings = data['track_embeddings'] #size [batch_size, img_count, latent_dim]
+            labels = data['id'].to(device) 
             optimizer.zero_grad()
 
           
-            outputs = model(tracks)
+            outputs = model(packets_of_frame_embeddings)
 
             # get semi-hard triplets
             triplet_pairs = miner(outputs, labels)
@@ -491,13 +495,7 @@ def train_and_eval(config_file):
     if verbose:
         print('Evaluating model...')
     model.eval()
-    # load "reference" for training KNN
-    #       - Closed Setting: same as training set
-    #       - Open Setting: the actual reference set
-    # load "query" for testing
-    #       - Closed Setting: test set
-    #       - Open SettingL the actual query set
-    
+      
 
     reference_embeddings, reference_labels, reference_loss = get_loss(model, ref_dataloader, loss_fn, miner, device)
     test_embeddings, test_labels, test_loss = get_loss(model, test_dataloader, loss_fn, miner, device)   

@@ -208,6 +208,59 @@ class Flowerpatch_Embeddings(Dataset):
 
         return {'track_embeddings':anchor_embs,'id':id}
 
+###################################################################################################
+##
+## Dataset class that uses precomputed tensor array
+## returns tensor array of len imgs per track that contains a set of embeddings from same id and same track
+##################################################################################################
+class Flowerpatch_Embeddings_v2(Dataset):
+    def __init__(self, emb_tens_arr, id_arr, track_arr,imgs_per_track=5):
+        super(Flowerpatch_Embeddings_v2, self).__init__()
+        self.emb_tens_arr = emb_tens_arr #tensor array of embeddings
+        self.id_arr = id_arr # np array of labels
+        self.track_arr = track_arr #np array of track ids
+        self.imgs_per_track = imgs_per_track # number of images in each track to feed 
+        self.df = self.build_df()
+    
+    def __len__(self):
+        return len(self.emb_tens_arr)
+
+    def build_df(self):
+        #save sets of embeddings by index in dataframe
+        df = pd.DataFrame({"ID":self.id_arr.flatten(),"track":self.track_arr.flatten()})
+        df['Pairs_indices'] = df.apply(lambda row: self.sample_track_id_image(row['ID'], row['track']), axis=1)
+        return df 
+
+    def sample_track_id_image(self,id,track_id):
+        #return the index of a randomly selected embedding 
+        #with the same id and track_id
+        idxs_same_id = np.where(self.id_arr == id)[0] #get indices of other samples of current id
+        tracks_to_check = self.track_arr[idxs_same_id] #filter tracks to check within id
+        idxs_same_track = np.where(tracks_to_check == track_id)[0] #get indicies that are same track and id
+        if len(idxs_same_track) >= self.imgs_per_track -1:
+            random_indices = np.random.choice(idxs_same_track, size=(self.imgs_per_track - 1), replace=False) #sample random indicies
+        else:
+            print(f"Warning: Not enough items in track {track_id} of id {id} with to sample {self.imgs_per_track} images.")
+            print("Number of image embeddings to sample among the", len(idxs_same_track),"elements because size is",idxs_same_track.shape)
+            random_indices = np.random.choice(idxs_same_track, size=(self.imgs_per_track - 1), replace=True) #sample random indicies
+        return random_indices
+
+    def __getitem__(self, idx):            
+        anchor_indices = self.df.loc[idx, 'Pairs_indices']
+        anchor_indices = torch.tensor(anchor_indices) #convert np idx array to tensor
+        mask = torch.zeros(self.emb_tens_arr.size(), dtype=torch.bool) #make a mask tensor array
+        mask[anchor_indices] = True
+        anchor_embs = self.emb_tens_arr[mask] #apply mask to to embed array            
+
+        #Add original sample to others in track
+        sample_emb = self.emb_tens_arr[idx].unsqueeze(0)
+        anchor_embs = anchor_embs.unsqueeze(0) #might need to remove for more than 1 pair embedding 
+
+        anchor_embs = torch.cat((sample_emb,anchor_embs)) #append tracks together 
+        id = torch.tensor(self.id_arr[idx])
+
+        return {'track_embeddings':anchor_embs,'id':id}
+
 
 
 ############################# Dataset Class for pairs of images #######################################
