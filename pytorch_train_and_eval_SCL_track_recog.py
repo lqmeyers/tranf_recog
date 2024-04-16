@@ -166,8 +166,161 @@ def knn_evaluation(train_images, train_labels, test_images, test_labels, n_neigh
 #########################################################################################
 
 
-def train_and_eval(config_file):
+########################################################################################
+#Function to return dataloaders for train and validation set for precomputing embeddings 
+#
+def get_train_valid_dataloaders(data_config):
+    """returns dataloaders for train and validation set"""
     
+    #Load some utils
+    image_size = data_config['input_size']
+    images_per_track = data_config['images_per_track']
+    bs = data_config['embeddor_batch_size']
+
+    #If valid df not already made, sample it
+    if data_config['datafiles']['valid'] != None: 
+        df = pd.read_csv(data_config['datafiles']['train'])
+        print("Reading dataframe at ",data_config['datafiles']['train'])
+        train_dataset = Flowerpatch_w_Track_and_Filter(df,'new_filepath',
+                                                       'ID','track',image_size,'train',imgs_per_track=images_per_track)
+        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=bs, shuffle=True)
+       
+        ### Valid dataset and dataloader
+        valid_df = pd.read_csv(data_config['datafiles']['valid'])
+        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath',
+                                                       'ID','track',image_size,'test',imgs_per_track=images_per_track)
+        valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
+    else:
+        #if no valid dataset, sample from training set
+        train_df = pd.read_csv(data_config['datafiles']['train'])
+    
+        unique_tracks = train_df['track'].unique() # Calculate the number of unique tracks
+        total_tracks = len(unique_tracks)
+        valid_num_tracks = round(data_config['percent_valid'] * total_tracks) #num tracks to sample 
+        valid_tracks = np.random.choice(unique_tracks, size=valid_num_tracks, replace=False)  # Randomly select tracks 
+       
+        valid_df = train_df[train_df['track'].isin(valid_tracks)] #build valid df 
+        train_df = train_df[~train_df['track'].isin(valid_tracks)] #remove valid tracks from train set
+
+        train_num = len(train_df)
+        valid_num_rows = len(valid_df)
+
+        print(f"Using {valid_num_rows} samples for validation set")
+        print(f"{train_num} total training samples")
+
+        # Build pytroch datasets and dataloaders
+        train_dataset = Flowerpatch_w_Track_and_Filter(train_df,'new_filepath',
+                                                       'ID','track',image_size,'train',imgs_per_track=images_per_track)
+        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=bs, shuffle=True)
+
+        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath',
+                                                       'ID','track',image_size,'test',imgs_per_track=images_per_track)
+        valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
+    
+    return train_dataloader, valid_dataloader
+####################################################################################
+
+
+#######################################################################################
+#
+# Function to return pytorch dataloader for test and reference set
+def get_test_ref_dataloaders(data_config):
+    """Returns pytorch dataloaders for train and reference set with subsamping"""
+    
+    #Load Miscl Utils 
+    image_size = data_config['input_size']
+    images_per_track = data_config['images_per_track']
+    bs = data_config['embeddor_batch_size']
+
+    # Build test dataloader and subsample for reference set
+    test_df = pd.read_csv(data_config['datafiles']['test'])
+    grouped = test_df.groupby(['ID','track']).filter(lambda x: len(x) >= images_per_track) #only sample long enough tracks
+    random_tracks_indices = grouped.groupby('ID').apply(lambda x: np.random.choice(x.index)).values #select random tracks
+    ref_df = pd.DataFrame()
+
+    for index in random_tracks_indices:
+        id_track_id = test_df.loc[index, 'ID']
+        id_track_track = test_df.loc[index,'track']
+        id_track_df = test_df[(test_df['ID'] == id_track_id) & (test_df['track'] == id_track_track)]
+        selected_images = id_track_df.sample(n=images_per_track)  # Sample multiple images for each selected ID and track combination
+        ref_df = pd.concat([ref_df, selected_images], axis=0)
+       
+        #remove other images from test
+        test_df = test_df[~((test_df['track'] == id_track_track) & (test_df['ID'] == id_track_id))]
+
+    ref_num_samples = len(ref_df)
+    test_num = len(test_df)
+    print(f"Using {ref_num_samples} samples for the reference set")
+    print(f"{test_num} total test samples")
+
+    #set different batch size for small reference set
+    aggr_bs = data_config['aggregator_batch_size']
+    if aggr_bs > ref_num_samples:
+        ref_bs = ref_num_samples
+    
+    # Build pytroch datasets and dataloaders
+    test_dataset = Flowerpatch_w_Track_and_Filter(test_df,'new_filepath',
+                                                'ID','track',image_size,'test',imgs_per_track=images_per_track)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
+   
+    ref_dataset = Flowerpatch_w_Track(ref_df,'new_filepath','ID','track',image_size,'test')
+    ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=ref_bs, shuffle=False)
+
+    return test_dataloader, ref_dataloader
+####################################################################################
+
+
+####################################################################################
+#
+# A Function to precompute and preliminarily eval quality of embeddings
+def precompute_embeddings(emb_path,data_config,device):
+    """precompute and return embeddings and labels for all datasets for training of feature agglomerator"""
+    
+    #Load embedder 
+    model_name = os.path.basename(emb_path)
+    embedder = torch.load(emb_path)
+    embedder.eval() 
+
+    ## Load dataloaders for feeding images through embedder 
+    train_dataloader, valid_dataloader = get_train_valid_dataloaders(data_config)
+    test_dataloader, ref_dataloader = get_test_ref_dataloaders(data_config)
+
+    # Compute Embeddings
+    train_embeddings, train_labels, train_tracks = get_embeddings_w_track(embedder,train_dataloader,device)
+    print('Train embeddings made with',model_name,"shape:",train_embeddings.size())
+
+    valid_embeddings, valid_labels, valid_tracks = get_embeddings_w_track(embedder,valid_dataloader,device)
+    print('Valid embeddings made with',model_name,"shape:",valid_embeddings.size())
+
+    test_embeddings, test_labels, test_tracks = get_embeddings_w_track(embedder,test_dataloader,device)
+    print('Test embeddings made with',model_name,"shape:",test_embeddings.size())
+    
+    ref_embeddings, ref_labels, ref_tracks = get_embeddings_w_track(embedder,ref_dataloader,device)
+    print('Reference embeddings made with',model_name,"shape:",ref_embeddings.size())
+
+    ## Evaluate quality of embeddings using KNN
+    print("KNN evaluation before multi-image agglomeration training")
+    print("")
+    print("KNN within train embeddings (initilized on valid set:)")
+    naive1 = knn_evaluation(valid_embeddings.cpu().numpy(),valid_labels,train_embeddings.cpu().numpy(),train_labels,1,False,False) #TODO Swap
+    print("")
+    print("KNN within test embeddings (initilized on ref set:)")
+    naive1 = knn_evaluation(ref_embeddings.cpu().numpy(),ref_labels,test_embeddings.cpu().numpy(),test_labels,1,False,False)
+    print("")
+    print("KNN evaluation open set (initilized batch 1 evaluated on batch 2)")
+    naive2 = knn_evaluation(train_embeddings.cpu().numpy(), train_labels, test_embeddings.cpu().numpy(), test_labels, 1,per_class=False)
+
+    return [train_embeddings,train_labels,train_tracks],[valid_embeddings,valid_labels,valid_tracks],[test_embeddings,test_labels,test_tracks],[ref_embeddings,ref_labels,ref_tracks]
+####################################################################################
+
+
+
+############################################### Training and Eval Handle###########################################
+#
+#
+def train_and_eval(config_file):
+    """A training and evaluation handle for multifeature agglomerator using precompueted embeddings"""
+    ##### Open and read config 
     try:
         with open(config_file) as f:
             config = yaml.safe_load(f)
@@ -183,12 +336,12 @@ def train_and_eval(config_file):
         return -1
     
     resume_training = train_config['wandb_resume']
-    #initialize wandb logging
+   
+    ###### Initialize wandb logging
     if resume_training == True: 
         experiment = wandb.init(project= train_config["wandb_project_name"],entity=train_config['wandb_entity_name'],resume=True,id=train_config['wandb_run_id'],dir=train_config['wandb_dir_path'])
     else:
         experiment = wandb.init(project= train_config["wandb_project_name"],entity=train_config['wandb_entity_name'],dir=train_config['wandb_dir_path'])
-    
     
     if verbose:
             now = datetime.now() # current date and time
@@ -210,169 +363,47 @@ def train_and_eval(config_file):
     if verbose:
         print(f'Found device: {device}')
 
-    # setting torch seed
+    ##### Set Random seeds 
     torch.manual_seed(torch_seed)
     np.random.seed(torch_seed)
     
-    ## Compute Embeddings
-   
-    ## Load embeddor to precompute
-    emb_path = model_config['embeddor_path']
-    model_name = os.path.basename(emb_path)
-
-    #Load embeddor and get embeddings
-    model_name = os.path.basename(emb_path)
-    embedder = torch.load(emb_path)
-    embedder.eval() 
-
-    ## Define Dataloaders for training of aggregator, including subsampling validation set if necessary
-
+    ##### Define some Miscl Utils
     image_size = data_config['input_size']
     images_per_track = data_config['images_per_track']
     bs = data_config['embeddor_batch_size']
-    #num_epochs = train_config['num_epochs']
-
-    ## Build and precompute train and validation embeddings 
-
-    if data_config['datafiles']['valid'] != None: 
-        df = pd.read_csv(data_config['datafiles']['train'])
-        print("Reading dataframe at ",data_config['datafiles']['train'])
-        train_dataset = Flowerpatch_w_Track_and_Filter(df,'new_filepath','ID','track',image_size,'train',imgs_per_track=images_per_track)
-        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=bs, shuffle=True)
-        train_embeddings, train_labels, train_tracks = get_embeddings_w_track(embedder,train_dataloader,device)
-        print('Train embeddings made with',model_name,"shape:",train_embeddings.size())
-
-        ### Valid dataset and dataloader
-        valid_df = pd.read_csv(data_config['datafiles']['valid'])
-        #valid_df = prepare_for_triplet_loss(valid_df, data_config['label_col'], data_config['fname_col']) #deprecated function standardizes col names
-
-        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
-        valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
-        valid_embeddings, valid_labels, valid_tracks = get_embeddings_w_track(embedder,valid_dataloader,device)
-        print('Valid embeddings made with',model_name,"shape:",valid_embeddings.size())
-
-    else:
-        #if no valid dataset, sample from training set
-        train_df = pd.read_csv(data_config['datafiles']['train'])
-        
-        # Calculate the number of unique tracks
-        unique_tracks = train_df['track'].unique()
-        total_tracks = len(unique_tracks)
-
-        # Determine the number of tracks needed for the validation set
-        valid_num_tracks = round(data_config['percent_valid'] * total_tracks)
-
-        # Randomly select tracks for the validation set
-        valid_tracks = np.random.choice(unique_tracks, size=valid_num_tracks, replace=False)
-
-        # Filter validation samples
-        valid_df = train_df[train_df['track'].isin(valid_tracks)]
-
-        # Filter training samples
-        train_df = train_df[~train_df['track'].isin(valid_tracks)]
-
-        train_num = len(train_df)
-        valid_num_rows = len(valid_df)
-
-        print(f"Using {valid_num_rows} samples for validation set")
-        print(f"{train_num} total training samples")
-
-        #train_df = prepare_for_triplet_loss(train_df, data_config['label_col'], data_config['fname_col']) #deprecated function only renames columns
-
-        train_dataset = Flowerpatch_w_Track_and_Filter(train_df,'new_filepath','ID','track',image_size,'train',imgs_per_track=images_per_track)
-        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=bs, shuffle=True)
-        train_embeddings, train_labels, train_tracks = get_embeddings_w_track(embedder,train_dataloader,device)
-        print('Train embeddings made with',model_name,"shape:",train_embeddings.size())
-
-        valid_dataset = Flowerpatch_w_Track_and_Filter(valid_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
-        valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=bs, shuffle=False)
-        valid_embeddings, valid_labels, valid_tracks = get_embeddings_w_track(embedder,valid_dataloader,device)
-        print('Valid embeddings made with',model_name,"shape:",valid_embeddings.size())
-
-    ### Build test dataloader and subsample for reference set
-    test_df = pd.read_csv(data_config['datafiles']['test'])
-    
-    #filter to make sure long enough
-    grouped = test_df.groupby(['ID','track']).filter(lambda x: len(x) >= images_per_track)
-    # Select a random track index for each 'ID'
-    random_tracks_indices = grouped.groupby('ID').apply(lambda x: np.random.choice(x.index)).values
-
-    # Now, let's sample multiple images for each selected ID and track combination
-    ref_df = pd.DataFrame()
-    for index in random_tracks_indices:
-        id_track_id = test_df.loc[index, 'ID']
-        id_track_track = test_df.loc[index,'track']
-        id_track_df = test_df[(test_df['ID'] == id_track_id) & (test_df['track'] == id_track_track)]
-        selected_images = id_track_df.sample(n=images_per_track)  # Sample images per track
-        ref_df = pd.concat([ref_df, selected_images], axis=0)
-        #remove other images from test
-        test_df = test_df[~((test_df['track'] == id_track_track) & (test_df['ID'] == id_track_id))]
-
-    # Count the number of samples in the reference set
-    ref_num_samples = len(ref_df)
-    test_num = len(test_df)
-
-    print(f"Using {ref_num_samples} samples for the reference set")
-    print(f"{test_num} total test samples")
-
-    #set different batch size for small reference set
     aggr_bs = data_config['aggregator_batch_size']
-    if aggr_bs > ref_num_samples:
-        ref_bs = ref_num_samples
+   
 
+    ##### Precompute Embeddings
+    emb_path = model_config['embeddor_path']
+    train_set,valid_set,test_set,ref_set = precompute_embeddings(emb_path,data_config,device) #return as list [embeddings,labels,track_ids]
+
+    #May need to update batch size params for small ref set 
+    if aggr_bs > len(ref_set[0]):
+        ref_bs = len(ref_set[0])
     
-    test_dataset = Flowerpatch_w_Track_and_Filter(test_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
-    test_embeddings, test_labels, test_tracks = get_embeddings_w_track(embedder,test_dataloader,device)
-    print('Test embeddings made with',model_name,"shape:",test_embeddings.size())
 
-    ref_dataset = Flowerpatch_w_Track(ref_df,'new_filepath','ID','track',image_size,'test')
-    ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=ref_bs, shuffle=False)
-    ref_embeddings, ref_labels, ref_tracks = get_embeddings_w_track(embedder,ref_dataloader,device)
-    print('Reference embeddings made with',model_name,"shape:",ref_embeddings.size())
-    
-    ## Evaluate quality of embeddings using KNN
-
-    print("KNN evaluation before multi-image agglomeration training")
-    print("")
-    print("KNN within train embeddings (initilized on valid set:)")
-    naive1 = knn_evaluation(valid_embeddings.cpu().numpy(),valid_labels,train_embeddings.cpu().numpy(),train_labels,1,False,False) #TODO Swap
-    print("")
-    print("KNN within test embeddings (initilized on ref set:)")
-    naive1 = knn_evaluation(ref_embeddings.cpu().numpy(),ref_labels,test_embeddings.cpu().numpy(),test_labels,1,False,False)
-    print("")
-    print("KNN evaluation open set (initilized batch 1 evaluated on batch 2)")
-    naive2 = knn_evaluation(train_embeddings.cpu().numpy(), train_labels, test_embeddings.cpu().numpy(), test_labels, 1,per_class=False)
-
-    #Build Dataloaders of precomputed embedding
-    #Now on recieving packets of frame embedding
-    train_dataset = Flowerpatch_Embeddings_v2(train_embeddings,train_labels,train_tracks,images_per_track)
+    ##### Build Dataloaders of precomputed embeddings 
+    # Now on recieving packets of frame embedding
+    train_dataset = Flowerpatch_Embeddings_v2(train_set[0],train_set[1],train_set[2],images_per_track)
     train_dataloader =  DataLoader(train_dataset, batch_size=aggr_bs, shuffle=True)
 
-    valid_dataset = Flowerpatch_Embeddings_v2(valid_embeddings,valid_labels,valid_tracks,images_per_track)
+    valid_dataset = Flowerpatch_Embeddings_v2(valid_set[0],valid_set[1],valid_set[2],images_per_track)
     valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=aggr_bs, shuffle=False)
 
-    test_dataset = Flowerpatch_Embeddings_v2(test_embeddings,test_labels,test_tracks,images_per_track)
+    test_dataset = Flowerpatch_Embeddings_v2(test_set[0],test_set[1],test_set[2],images_per_track)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=aggr_bs, shuffle=False)
 
-    ref_dataset = Flowerpatch_Embeddings_v2(ref_embeddings,ref_labels,ref_tracks,images_per_track)
+    ref_dataset = Flowerpatch_Embeddings_v2(ref_set[0],ref_set[1],ref_set[2],images_per_track)
     ref_dataloader = torch.utils.data.DataLoader(ref_dataset, batch_size=ref_bs, shuffle=False)
 
-    if verbose:
-        try:
-            batch = next(iter(train_dataloader))
-            print(f'Batch image shape: {batch["image"].shape}')
-            print(f'Batch label shape: {batch["label"].shape}')
-        except Exception as e:
-            print('ERROR - could not print out batch properties')
-            print(f'Error msg: {e}')
-
-    # build model
+ 
+    #### Build Aggregator model
     if verbose:
         print('Building model....')
-    model = AttentionAggregator(batch_size=bs,img_count=data_config['images_per_track'],emb_path=model_config['embeddor_path']) #recognition model
+    model = AttentionAggregator(batch_size=aggr_bs,img_count=data_config['images_per_track'],emb_path=model_config['embeddor_path']) #recognition model
 
-    #send to CUDA 
+    #### Send to CUDA 
     model.to(device)
 
     # load latest saved checkpoint if resuming a failed run
@@ -389,12 +420,12 @@ def train_and_eval(config_file):
         print(f'Loading saved checkpoint model {most_recent_model}')
         model = torch.load(most_recent_model)
     
+
+    ##### Define Optimizer, Miner and other training features 
+
     #optimizer = torch.optim.Adam(model.parameters(), lr=train_config['learning_rate'])
     optimizer = optim.SGD(model.parameters(), lr=train_config['learning_rate'])
-
-    # Initialize optimizer and scheduler
     #scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=10, factor=0.75, verbose=True,min_lr = 1e-5)
-
     #miner = miners.MultiSimilarityMiner()
     miner = miners.TripletMarginMiner(margin=train_config['margin'], type_of_triplets="semihard", distance = CosineSimilarity())
     miner_type = "semihard"
@@ -403,18 +434,15 @@ def train_and_eval(config_file):
         print('Loss:',loss_fn)
 
 
-    model.to(device)
-
-    # if resuming training set epoch number
+    #### If resuming training set epoch number
     if resume_training == True:
         epoch_range = range(train_config['num_epochs'])[most_recent_epoch:]
         stop_epoch = 0
-
     else:
         epoch_range = range(train_config['num_epochs'])
         stop_epoch = 0
 
-    # Initialize early stopping variables
+    ##### Initialize early stopping variables
     best_valid_loss = float('inf')
     best_model = model
     valid_loss = 'Null'
@@ -423,7 +451,7 @@ def train_and_eval(config_file):
     consecutive_epochs = train_config['early_stop_consecutive_epochs']
     stop_early = False
 
-    # Train the model
+    ##### Train the model
     if verbose:
         print('Training model...')
     print_k = train_config['print_k']
@@ -432,7 +460,7 @@ def train_and_eval(config_file):
     for epoch in epoch_range: 
         running_loss = 0.0
         for k, data in enumerate(train_dataloader):
-            #print("Loading data for batch",k)
+            # Load data for minibatch
             packets_of_frame_embeddings = data['track_embeddings'] #size [batch_size, img_count, latent_dim]
             labels = data['id'].to(device) 
             optimizer.zero_grad()
@@ -442,13 +470,15 @@ def train_and_eval(config_file):
             # get semi-hard triplets
             triplet_pairs = miner(outputs, labels)
 
-            #hard_pairs = miner(outputs, labels)
+            # Calculate loss
             loss = loss_fn(outputs, labels, triplet_pairs)
             loss.backward()
+            
+            # Update model params 
             optimizer.step()
             running_loss += loss.item()
 
-
+            # Log with wandb 
             experiment.log({
                 'train loss': loss.item(),
                 'epoch': epoch,
@@ -456,18 +486,18 @@ def train_and_eval(config_file):
                 'triplet_num': torch.numel(triplet_pairs[0])
             })
 
-#             if (k+1)%print_k == 0:
+        ### Save Checkpoints if correct epoch 
         if epoch % train_config['save_checkpoint_freq'] == 0 or (epoch+1) == train_config['num_epochs']: 
                 if os.path.dirname(model_config['model_path']) is not None:
                     print('Saving checkpoint',epoch)
                     if not os.path.exists(os.path.dirname(model_config['model_path'])+r'/checkpoints/'):
                         os.mkdir(os.path.dirname(model_config['model_path'])+r'/checkpoints/')
                     torch.save(model,(os.path.dirname(model_config['model_path'])+r'/checkpoints/'+str(epoch)+".pth"))
-                    
+
+        ### calculate validation metrics             
         with torch.no_grad():
             valid_outputs, valid_labels, valid_loss = get_loss(model, valid_dataloader, loss_fn, miner, device)
             print(f'[{epoch + 1}, {k + 1:5d}] train_loss: {running_loss/print_k:.4f} | val_loss: {valid_loss:.4f}')
-            running_loss=0.0
             #scheduler.step(valid_loss)
             #current_lr = optimizer.param_groups[0]['lr']
             experiment.log({'valid loss': valid_loss, })
@@ -505,7 +535,7 @@ def train_and_eval(config_file):
         print('Evaluating model...')
     model.eval()
       
-
+    ##### Calculate loss and get aggregated features from trained model
     reference_embeddings, reference_labels, reference_loss = get_loss(model, ref_dataloader, loss_fn, miner, device)
     test_embeddings, test_labels, test_loss = get_loss(model, test_dataloader, loss_fn, miner, device)   
     
@@ -514,9 +544,11 @@ def train_and_eval(config_file):
     print(f'Test (or Query) Loss: {test_loss:.4f}')
     print('Test (or Query) size:',test_embeddings.shape)
 
+    #### Evaluate aggregated features
     results = knn_evaluation(reference_embeddings, reference_labels, test_embeddings, test_labels, 
                             eval_config['n_neighbors'], eval_config['per_class'], eval_config['conf_matrix'])
     
+    ##### Save results in pickle file and save trained model
     # Add total training loss to results 
     results['train_loss'] = running_loss
     print(results)
@@ -524,13 +556,12 @@ def train_and_eval(config_file):
     # Adding other metrics to results to pass to csv
     results['valid_loss'] = valid_loss
     results['wandb_id'] = experiment.id
-    print(experiment.id)
     results['images_per_track'] = images_per_track
     results['start_time'] = experiment.start_time
     results['train_time'] = duration
     results['stop_epoch'] = stop_epoch
-    results['total_testing_images'] = test_num
-    results['total_reference_images'] = len(ref_df)
+    results['total_testing_images'] = len(test_embeddings)
+    results['total_reference_images'] = len(reference_embeddings)
 
     # if not os.path.exists(eval_config['pickle_file']):
     #     with open(eval_config['pickle_file'],'ab'):
@@ -541,6 +572,7 @@ def train_and_eval(config_file):
         pickle.dump(results,fi)
         print("Results saved to pickle file")
 
+    #### Save trained model
     if model_config['model_path'] is not None:
         print('Saving model...')
         torch.save(model, model_config['model_path'])
@@ -549,7 +581,6 @@ def train_and_eval(config_file):
     print('Finished')
     wandb.finish()
 
-## Train recog_head using trained track agglomerator
 
 
 print("beginning execution")
