@@ -212,6 +212,7 @@ def train_and_eval(config_file):
 
     # setting torch seed
     torch.manual_seed(torch_seed)
+    np.random.seed(torch_seed)
     
     ## Compute Embeddings
    
@@ -254,12 +255,24 @@ def train_and_eval(config_file):
         #if no valid dataset, sample from training set
         train_df = pd.read_csv(data_config['datafiles']['train'])
         
-        valid_num_rows = round(data_config['percent_valid']*len(train_df))
-        valid_rows = train_df.sample(n=valid_num_rows)
-        
-        train_df = train_df.drop(valid_rows.index)
+        # Calculate the number of unique tracks
+        unique_tracks = train_df['track'].unique()
+        total_tracks = len(unique_tracks)
+
+        # Determine the number of tracks needed for the validation set
+        valid_num_tracks = round(data_config['percent_valid'] * total_tracks)
+
+        # Randomly select tracks for the validation set
+        valid_tracks = np.random.choice(unique_tracks, size=valid_num_tracks, replace=False)
+
+        # Filter validation samples
+        valid_df = train_df[train_df['track'].isin(valid_tracks)]
+
+        # Filter training samples
+        train_df = train_df[~train_df['track'].isin(valid_tracks)]
+
         train_num = len(train_df)
-        valid_df = valid_rows
+        valid_num_rows = len(valid_df)
 
         print(f"Using {valid_num_rows} samples for validation set")
         print(f"{train_num} total training samples")
@@ -278,38 +291,35 @@ def train_and_eval(config_file):
 
     ### Build test dataloader and subsample for reference set
     test_df = pd.read_csv(data_config['datafiles']['test'])
+    
+    #filter to make sure long enough
+    grouped = test_df.groupby(['ID','track']).filter(lambda x: len(x) >= images_per_track)
+    # Select a random track index for each 'ID'
+    random_tracks_indices = grouped.groupby('ID').apply(lambda x: np.random.choice(x.index)).values
 
-    #Group by 'ID' and 'Track' and filter out tracks with fewer than 10 images
-    grouped = test_df.groupby(['ID', 'track']).filter(lambda x: len(x) >= 10)
-    #Select a random track with at least 10 images for each 'ID'
-    random_tracks = grouped.groupby('ID')['track'].apply(lambda x: np.random.choice(x)).reset_index()
-    #Iter through selections and pull images for each
-    idx = 0
-    for i, row in random_tracks.iterrows():
-        id = row['ID']
-        track = row['track']
-        id_to_check = test_df[test_df['ID']==id]
-        to_check = id_to_check[id_to_check['track'] == track]
-        selected_images = to_check.sample(n=images_per_track) #TODO Add num images per track to yml 
-        if idx == 0:
-            ref_df = selected_images
-        else:
-            ref_df = pd.concat([ref_df,selected_images],axis=0)
-        idx+=1 
+    # Now, let's sample multiple images for each selected ID and track combination
+    ref_df = pd.DataFrame()
+    for index in random_tracks_indices:
+        id_track_id = test_df.loc[index, 'ID']
+        id_track_track = test_df.loc[index,'track']
+        id_track_df = test_df[(test_df['ID'] == id_track_id) & (test_df['track'] == id_track_track)]
+        selected_images = id_track_df.sample(n=images_per_track)  # Sample images per track
+        ref_df = pd.concat([ref_df, selected_images], axis=0)
+        #remove other images from test
+        test_df = test_df[~((test_df['track'] == id_track_track) & (test_df['ID'] == id_track_id))]
 
-    #Remove sampled images from the source DataFrame
-    test_df = test_df.drop(ref_df.index)
-
+    # Count the number of samples in the reference set
+    ref_num_samples = len(ref_df)
     test_num = len(test_df)
-    ref_num_rows = len(ref_df)
 
-    print(f"Using {ref_num_rows} samples for validation set")
+    print(f"Using {ref_num_samples} samples for the reference set")
     print(f"{test_num} total test samples")
 
     #set different batch size for small reference set
-    ref_bs = 32
     aggr_bs = data_config['aggregator_batch_size']
-    
+    if aggr_bs > ref_num_samples:
+        ref_bs = ref_num_samples
+
     
     test_dataset = Flowerpatch_w_Track_and_Filter(test_df,'new_filepath','ID','track',image_size,'test',imgs_per_track=images_per_track)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=bs, shuffle=False)
@@ -427,7 +437,6 @@ def train_and_eval(config_file):
             labels = data['id'].to(device) 
             optimizer.zero_grad()
 
-          
             outputs = model(packets_of_frame_embeddings)
 
             # get semi-hard triplets
@@ -521,7 +530,7 @@ def train_and_eval(config_file):
     results['train_time'] = duration
     results['stop_epoch'] = stop_epoch
     results['total_testing_images'] = test_num
-    results['total_reference_images'] = ref_num_rows
+    results['total_reference_images'] = len(ref_df)
 
     # if not os.path.exists(eval_config['pickle_file']):
     #     with open(eval_config['pickle_file'],'ab'):
