@@ -125,13 +125,13 @@ class Flowerpatch_w_Track_and_Filter(Dataset):
                                                     transforms.Resize(image_size),
                                                     transforms.ToTensor()]) # include here augmentation techniques
         
-        print("Full:",len(self.df))
+        #print("Full:",len(self.df))
         #  filter df to only contain long enough tracks
         self.df = self.df.groupby([self.track_col,self.label_col]).filter(lambda x: len(x) > self.imgs_per_track)
-        print("With enough imgs per track:",len(self.df))
+        #print("With enough imgs per track:",len(self.df))
         #  remove id with only 1 track
         self.df = self.df.groupby(self.label_col).filter(lambda x: len(np.unique(x[self.track_col])) > 1)
-        print("With only ids with multiple filtered tracks:",len(self.df))
+        #print("With only ids with multiple filtered tracks:",len(self.df))
         self.df_len = len(df)
 
 
@@ -157,59 +157,7 @@ class Flowerpatch_w_Track_and_Filter(Dataset):
 #with the same shape as array to be filtered, change values to be removed/kept and then filter
 #tensor by tensor 
 
-###################################################################################################
-##
-## Dataset class that uses precomputed tensor array
-## returns tensor array of len imgs per track that contains a set of embeddings from same id and same track
 ##################################################################################################
-class Flowerpatch_Embeddings(Dataset):
-    def __init__(self, emb_tens_arr, id_arr, track_arr,imgs_per_track=5):
-        super(Flowerpatch_Embeddings, self).__init__()
-        self.emb_tens_arr = emb_tens_arr #tensor array of embeddings
-        self.id_arr = id_arr # np array of labels
-        self.track_arr = track_arr #np array of track ids
-        self.imgs_per_track = imgs_per_track # number of images in each track to feed 
-    
-    def __len__(self):
-        return len(self.emb_tens_arr)
-
-    def __getitem__(self, idx):            
-        anchor_track =  self.track_arr[idx] #get track of current sampled
-        anchor_id = self.id_arr[idx] #get id of current sample
-        idxs_same_id = np.where(self.id_arr == anchor_id)[0] #get indices of other samples of current id
-        tracks_to_check = self.track_arr[idxs_same_id] #filter tracks to check within id
-        idxs_same_track = np.where(tracks_to_check == anchor_track)[0] #get indicies that are same track and id
-        
-        idxs_same_track_and_id_tens = torch.tensor(idxs_same_track) #convert np idx array to tensor
-        mask = torch.zeros(self.emb_tens_arr.size(0), dtype=torch.bool) #make a mask tensor array
-        mask[idxs_same_track_and_id_tens] = True
-        embs_same_track_and_id = self.emb_tens_arr[mask]  #filter embedding arrays to sample among
-        
-        #print("Length of img_same_tracks before sampling:", len(img_same_tracks))
-        if embs_same_track_and_id.size(0) >= self.imgs_per_track - 1:
-            random_indices = np.random.choice(embs_same_track_and_id.size(0), size=(self.imgs_per_track - 1), replace=False) #sample random indicies
-            random_indices = torch.tensor(random_indices) #convert np idx array to tensor
-            mask = torch.zeros(embs_same_track_and_id.size(0), dtype=torch.bool) #make a mask tensor array
-            mask[random_indices] = True
-            anchor_embs = embs_same_track_and_id[mask] #apply mask to to embed array            
-        else:
-            print(f"Warning: Not enough items in track {anchor_track} of id {anchor_id} with to sample {self.imgs_per_track} images.")
-            print("Number of image embeddings to sample among the", embs_same_track_and_id.size(0),"elements because size is",embs_same_track_and_id.size())
-            random_indices = np.random.choice( embs_same_track_and_id.size(0), size=(self.imgs_per_track - 1), replace=True) #sample random indicies
-            random_indices = torch.tensor(random_indices) #convert np idx array to tensor
-            mask = torch.zeros(embs_same_track_and_id.size(0), dtype=torch.bool) #make a mask tensor array
-            mask[random_indices] = True
-            anchor_embs = embs_same_track_and_id[mask] #apply mask to to embed array 
-         
-        #Add original sample to others in track
-        sample_emb = self.emb_tens_arr[idx].unsqueeze(0)
-        anchor_embs = torch.cat((sample_emb,anchor_embs)) #append tracks together 
-        id = torch.tensor(self.id_arr[idx])
-
-        return {'track_embeddings':anchor_embs,'id':id}
-
-###################################################################################################
-##
 ## Dataset class that uses precomputed tensor array
 ## returns tensor array of len imgs per track that contains a set of embeddings from same id and same track
 ##################################################################################################

@@ -67,8 +67,8 @@ class VectorMeanLayer(nn.Module):
         self.verbose = verbose
         self.idx = 0 
         #build weight matrix to compare all features by each other, and the mean
-        self.w = nn.Parameter(torch.randn(latent_dim * 2, latent_dim)* 0.99,requires_grad = True)  # Initialize weights
-
+        self.w = nn.Parameter(1-(torch.randn(latent_dim * 2, latent_dim)* 0.99),requires_grad = True)  # Initialize weights close to 0
+        self.bias = nn.Parameter(torch.tensor(1.0), requires_grad=False)
     def forward(self, inputs):
         if self.idx != 0:
             self.verbose = False
@@ -76,55 +76,52 @@ class VectorMeanLayer(nn.Module):
         batch_size, track_size, latent_dim = inputs.size()
         if self.verbose == True: 
             print("initilial input size", inputs.size())
-            print(inputs)
-
 
         # Calculate mean along the track dimension
         means = torch.mean(inputs, dim=1, keepdim=True)
         if self.verbose == True: 
             print("Size of means of features",means.size())
-            print(means)
+       
 
         # Repeat means to match the original input shape
         means = means.expand(-1, track_size, -1)
         if self.verbose == True: 
             print("expand means",means.size())
-            print(means)
+          
 
         # Concatenate means with original input along the last dimension
         full_inputs = torch.cat([inputs, means], dim=2)
         if self.verbose == True: 
             print("full inputs size",full_inputs.size())
-            print(full_inputs)
             print("weight matrix size",self.w.size())
 
         # Perform matrix multiplication with weights
-        output = torch.matmul(full_inputs, self.w.to(full_inputs.device))
+        output = torch.matmul(full_inputs,(self.w.to(full_inputs.device)+ self.bias.to(full_inputs.device)))
         if self.verbose == True: 
             print("Outputed matrix size", output.size())
-            print(output)
         
         self.idx += 1 
         return output 
 
 class AttentionAggregator(nn.Module):
-    def __init__(self,batch_size=32,img_count=5,latent_dim=128,emb_path= "/home/gsantiago/ReID_model_training/new_auto_train_eval/models_trained/summer_bee_dataset_open_train_bee_64_ids_batch1_sample_num_64/wandb/run-20231106_004425-yida7voj/files/summer_bee_dataset_open_train_bee_64_ids_batch1_sample_num_64.pth") -> None:
+    def __init__(self,img_count=5,latent_dim=128) -> None:
         super(AttentionAggregator,self).__init__()
-        self.bs = batch_size
+        #self.bs = batch_size
         self.img_count = img_count
         self.latet_dim = latent_dim
-        self.model_name = os.path.basename(emb_path)
-        self.embedder = torch.load(emb_path) 
-        #make all params unupdateable?
-        for param in self.embedder.parameters():
-            param.requires_grad = False
-
+        
         #Build and Normalize attention matrix re Thomas Atkins code
         self.Generate_A = VectorMeanLayer(k=1,verbose=True,latent_dim=self.latet_dim)
         self.Normalize_A = nn.Softmax(dim=1)
         self.ElementWise = torch.mul
         self.idx = 0 
-            
+        #If batch_size = 256
+        # Un-normalized Attention Matrix torch.Size([256, 2, 128])
+        # Normalized Attention Matrix torch.Size([256, 2, 128])
+        # Features scaled by attention weights torch.Size([256, 2, 128])
+        # Summed fraction features torch.Size([256, 128])
+        # Agglomerated features after L2 norm torch.Size([256, 128])
+                    
     def forward(self,x):
         A = self.Generate_A(x)
         
@@ -252,6 +249,34 @@ class AttentionAggregator(nn.Module):
 #     def model(self, track_size, input_size_1, input_size_2):
 #         x = Input(shape=(track_size, input_size_1, input_size_2, 3))
 #         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+######################### Simple feed through model to return the mean in track dimension########################
+class MeanAggregator(nn.Module):
+    def __init__(self,img_count=5,latent_dim=128) -> None:
+        super(MeanAggregator,self).__init__()
+        self.img_count = img_count
+        self.latet_dim = latent_dim
+   
+    def forward(self,inputs):
+        batch_size, track_size, latent_dim = inputs.size()
+        # Select only the latent dimension from the tensor
+        output = torch.mean(inputs, dim=1)
+        return output 
+        
+######################### Simple feed through model to return only the first image in a track########################
+class FixedAggregator(nn.Module):
+    def __init__(self,img_count=5,latent_dim=128) -> None:
+        super(FixedAggregator,self).__init__()
+        self.img_count = img_count
+        self.latet_dim = latent_dim
+   
+    def forward(self,inputs):
+        batch_size, track_size, latent_dim = inputs.size()
+        # Select only the latent dimension from the tensor
+        output = inputs[:, 0, :]
+        return output 
+        
+
 
 ############################# Pytroch implementation of attention based aggregator and recog ######################
     
