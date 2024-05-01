@@ -155,7 +155,7 @@ class Flowerpatch_w_Track_and_Filter(Dataset):
 
 #for filtering all tensor arrays need to convert np indices to tensor and initilize mat tens array
 #with the same shape as array to be filtered, change values to be removed/kept and then filter
-#tensor by tensor 
+#tensor by tensor, may cause flattening problems... investigating
 
 ##################################################################################################
 ## Dataset class that uses precomputed tensor array
@@ -196,13 +196,20 @@ class Flowerpatch_Embeddings_v2(Dataset):
     def __getitem__(self, idx):            
         anchor_indices = self.df.loc[idx, 'Pairs_indices']
         anchor_indices = torch.tensor(anchor_indices) #convert np idx array to tensor
-        mask = torch.zeros(self.emb_tens_arr.size(), dtype=torch.bool) #make a mask tensor array
-        mask[anchor_indices] = True
-        anchor_embs = self.emb_tens_arr[mask] #apply mask to to embed array            
+        
+        #Create a mask for selecting rows
+        mask = torch.zeros_like(self.emb_tens_arr, dtype=torch.bool)
+        mask[anchor_indices, :] = True
 
+        # Select rows from the embedding tensor based on the mask
+        anchor_embs = self.emb_tens_arr[mask]
+
+        # Reshape the output to ensure the correct shape
+        anchor_embs = anchor_embs.view(-1, self.emb_tens_arr.size(1))
+               
         #Add original sample to others in track
         sample_emb = self.emb_tens_arr[idx].unsqueeze(0)
-        anchor_embs = anchor_embs.unsqueeze(0) #might need to remove for more than 1 pair embedding 
+        anchor_embs = anchor_embs #might need to unsqueeze ? 
 
         anchor_embs = torch.cat((sample_emb,anchor_embs)) #append tracks together 
         id = torch.tensor(self.id_arr[idx])

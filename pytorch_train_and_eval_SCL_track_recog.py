@@ -303,8 +303,8 @@ def precompute_embeddings(emb_path,data_config,device):
     ## Evaluate quality of embeddings using KNN
     print("KNN evaluation before multi-image agglomeration training")
     print("")
-    print("KNN within valid embeddings (initilized on train set:)")
-    naive1 = knn_evaluation(train_embeddings.cpu().numpy(),train_labels,valid_embeddings.cpu().numpy(),valid_labels,1,False,False) #TODO Swap
+    print("KNN within train embeddings (initilized on valid set:)")
+    naive1 = knn_evaluation(valid_embeddings.cpu().numpy(),valid_labels,train_embeddings.cpu().numpy(),train_labels,1,False,False) #TODO Swap
     print("")
     print("KNN within test embeddings (initilized on ref set:)")
     naive1 = knn_evaluation(ref_embeddings.cpu().numpy(),ref_labels,test_embeddings.cpu().numpy(),test_labels,1,False,False)
@@ -394,6 +394,8 @@ def train_and_eval(config_file):
     #May need to update batch size params for small ref set 
     if aggr_bs > len(ref_set[0]):
         ref_bs = len(ref_set[0])
+    else:
+        ref_bs = aggr_bs
     
 
     ##### Build Dataloaders of precomputed embeddings 
@@ -552,6 +554,10 @@ def train_and_eval(config_file):
     baseline_metrics = eval_baselines(model_config,test_dataloader,ref_dataloader,loss_fn,miner,device,eval_config)
     
     ##### Calculate loss and get aggregated features from trained model
+    # 4/25 test knn init on non averaged vals
+    # reference_embeddings = ref_set[0]
+    # reference_labels = ref_set[1]
+    
     reference_embeddings, reference_labels, reference_loss = get_loss(model, ref_dataloader, loss_fn, miner, device)
     test_embeddings, test_labels, test_loss = get_loss(model, test_dataloader, loss_fn, miner, device)   
     
